@@ -7,6 +7,6 @@ Replay Buffer
 
 Two Networks
 
-Tensorboard Logging
+~Tensorboard Logging~
 
 Benchmarks in Standard Gymnasium Environments
