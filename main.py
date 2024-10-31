@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import gymnasium as gym
+from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 from tqdm import tqdm
 
@@ -34,9 +35,12 @@ class BaseDQN(torch.nn.Module):
         return loss.item()
 
 class DQN(BaseDQN):
-    def __init__(self, env: gym.Env, gamma=0.99) -> None:
+    def __init__(self, env: gym.Env, gamma=0.99, logdir="logs/DQN", epsilon=0.99) -> None:
         self.env = env
+        self.logdir=logdir
+        self.epsilon=epsilon
         self.actionlen = self.env.action_space.n
+        self.writer=SummaryWriter(self.logdir)
         self.gamma = gamma
         super().__init__(input_size=self.env.observation_space.shape[0] + 1)
         self.scripted_model = torch.jit.script(self)
@@ -99,6 +103,18 @@ class DQN(BaseDQN):
             rew_list.append(total_reward)
             steps_list.append(steps)
 
+            self.writer.add_scalar("Reward/avg", np.mean(rew_list), i)
+            self.writer.add_scalar("Reward/max", np.max(rew_list), i)
+            self.writer.add_scalar("Reward/min", np.min(rew_list), i)
+            self.writer.add_scalar("Loss/avg", np.mean(loss_list), i)
+            self.writer.add_scalar("Loss/max", np.max(loss_list), i)
+            self.writer.add_scalar("Loss/min", np.min(loss_list), i)
+            self.writer.add_scalar("Steps/avg", np.mean(steps_list), i)
+            self.writer.add_scalar("Steps/max", np.max(steps_list), i)
+            self.writer.add_scalar("Steps/min", np.min(steps_list), i)
+            self.writer.add_scalar("Epsilon", self.epsilon, i)
+
+
             if i % 1000 == 0 and i > 0:
                 printb(f"Avg Reward for {i}th iteration: {np.mean(rew_list):.2f}",
                        f"Max Reward for {i}th iteration: {np.max(rew_list):.2f}",
@@ -113,10 +129,7 @@ class DQN(BaseDQN):
                 rew_list.clear()
                 loss_list.clear()
                 steps_list.clear()
-
-    def save_model(self, path: str):
-        torch.jit.save(self.scripted_model, path)
-        print(f"Model saved to {path}")
+        self.writer.close()
 
 
 def printb(*messages):
