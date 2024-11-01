@@ -1,78 +1,64 @@
+from collections import deque
 import torch
 import torch.nn as nn
+import random
 import gymnasium as gym
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 from tqdm import tqdm
 
-class BaseDQN(torch.nn.Module):
-    def __init__(self, input_size) -> None:
-        super().__init__()
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.linear_relu_stack = nn.Sequential(
-            nn.Linear(input_size, 16),
-            nn.ReLU(),
-            nn.Linear(16, 64),
-            nn.ReLU(),
-            nn.Linear(64, 32),
-            nn.ReLU(),
-            nn.Linear(32, 1)
-        ).to(self.device)
-        self.optimizer = torch.optim.Adam(self.linear_relu_stack.parameters())
-        self.loss = nn.MSELoss()
+from main import Base, printb
 
-    def forward(self, X: torch.Tensor):
-        logits = self.linear_relu_stack(X)
-        return logits
-    
-    def update(self, X: torch.Tensor, y: torch.Tensor):
-        self.train()
-        y_pred=self(X)
-        loss = self.loss(y_pred, y)
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-        return loss.item()
+torch.set_default_device('cuda')
+torch.set_default_dtype(torch.float64)
 
-class DQN(BaseDQN):
-    def __init__(self, env: gym.Env, gamma=0.99, logdir="logs/DQN", epsilon=0.99) -> None:
+
+class DQN(Base):
+    def __init__(self, env: gym.Env, gamma=0.99, logdir="logs/DQN", epsilon=0.99, batch_size=100) -> None:
         self.env = env
-        self.logdir=logdir
-        self.epsilon=epsilon
+        self.logdir = logdir
+        self.epsilon = epsilon
         self.actionlen = self.env.action_space.n
-        self.writer=SummaryWriter(self.logdir)
+        self.writer = SummaryWriter(self.logdir)
         self.gamma = gamma
-        super().__init__(input_size=self.env.observation_space.shape[0] + 1)
-        self.scripted_model = torch.jit.script(self)
+        self.buffer = []
+        self.replay_buffer= deque(maxlen=5000)
+        self.batch_size = batch_size
+        super().__init__(input_size=self.env.observation_space.shape[0] + 1, output_size=1)
 
     def act(self, obs: np.array, pred_only=False):
         if not pred_only and np.random.rand() < self.epsilon:
             return np.random.randint(0, self.actionlen)
         with torch.no_grad():
-            input = torch.tensor(obs, dtype=torch.float32, device=self.device).repeat(self.actionlen, 1)
-            action_tensor = torch.arange(self.actionlen, dtype=torch.float32, device=self.device).unsqueeze(1).view(-1, 1)
-            input = torch.cat((input, action_tensor), dim=1)
-            rew = self.scripted_model(input).squeeze()
-            return torch.argmax(rew).item()
+            obs_tensor = torch.tensor(obs, dtype=torch.float64, device='cuda').repeat(self.actionlen, 1)
+            actions = torch.arange(self.actionlen, dtype=torch.float64, device='cuda').unsqueeze(1)
+            input = torch.cat((obs_tensor, actions), dim=1)
+            q_values = self(input).squeeze()
+            return torch.argmax(q_values).item()
 
-    def infer(self, obs, action, rew, next_obs, done):
-        input = torch.tensor(list(obs) + [action], dtype=torch.float32, device=self.device)
-        
-        next_obs_tensor = torch.tensor(next_obs, dtype=torch.float32, device=self.device).repeat(self.actionlen, 1)
-        next_actions_tensor = torch.arange(self.actionlen, dtype=torch.float32, device=self.device).view(-1, 1)
+    def infer(self):
+        batch = self.buffer
+        obs_batch, action_batch, rew_batch, next_obs_batch, done_batch = zip(*batch)
+
+        inputs = torch.stack([torch.tensor(list(obs) + [action], dtype=torch.float64, device='cuda')
+                              for obs, action in zip(obs_batch, action_batch)])
+
+        next_obs_tensor = torch.tensor(next_obs_batch, dtype=torch.float64, device='cuda').repeat_interleave(self.actionlen, dim=0)
+        next_actions_tensor = torch.arange(self.actionlen, dtype=torch.float64, device='cuda').repeat(len(next_obs_batch)).unsqueeze(1)
         next_inputs = torch.cat((next_obs_tensor, next_actions_tensor), dim=1)
-        
-        with torch.no_grad():
-            next_q_values = self.scripted_model(next_inputs).squeeze()
-        max_next_q_value = next_q_values.max().item()
 
-        target = rew if done else rew + self.gamma * max_next_q_value
-        target_tensor = torch.tensor(target, dtype=torch.float32, device=self.device)
-        
-        return self.update(input, target_tensor)
+        with torch.no_grad():
+            next_q_values = self(next_inputs).view(len(next_obs_batch), self.actionlen)
+        max_next_q_values = next_q_values.max(dim=1).values
+
+        targets = torch.tensor(rew_batch, dtype=torch.float64, device='cuda') + self.gamma * max_next_q_values * torch.tensor([1 - d for d in done_batch], dtype=torch.float64, device='cuda')
+
+        return self.update(inputs, targets)
+
+
 
     def learn(self, timesteps: int):
-        self.epsilon = 1
+        self.epsilon = 1.0
         rew_list = []
         loss_list = []
         steps_list = []
@@ -81,7 +67,6 @@ class DQN(BaseDQN):
             obs, _ = self.env.reset()
             terminated = False
             total_reward = 0
-            total_loss = 0
             steps = 0
 
             while not terminated:
@@ -90,16 +75,18 @@ class DQN(BaseDQN):
                 obs, rew, terminated, truncated, _ = self.env.step(action)
                 total_reward += rew
 
-                if steps % 10 == 0:
-                    loss = self.infer(prev_obs, action, rew, obs, terminated)
-                    total_loss += loss
-                steps += 1
+                self.buffer.append((prev_obs, action, rew, obs, terminated))
 
+                if len(self.buffer) >= self.batch_size:
+                    loss = self.infer()
+                    loss_list.append(loss)
+                    self.buffer.clear()
+
+                steps += 1
                 if truncated:
                     break
-                
-            self.epsilon = max(0.1, self.epsilon - (0.9 / (timesteps * (1 - 0.25))))
-            loss_list.append(total_loss)
+
+            self.epsilon = max(0.05, self.epsilon - (1 / (timesteps * (1 - 0.1))))
             rew_list.append(total_reward)
             steps_list.append(steps)
 
@@ -107,13 +94,13 @@ class DQN(BaseDQN):
             self.writer.add_scalar("Reward/max", np.max(rew_list), i)
             self.writer.add_scalar("Reward/min", np.min(rew_list), i)
             self.writer.add_scalar("Loss/avg", np.mean(loss_list), i)
-            self.writer.add_scalar("Loss/max", np.max(loss_list), i)
-            self.writer.add_scalar("Loss/min", np.min(loss_list), i)
-            self.writer.add_scalar("Steps/avg", np.mean(steps_list), i)
+            if(len(loss_list)>0):
+                self.writer.add_scalar("Loss/max", np.max(loss_list), i)
+                self.writer.add_scalar("Loss/min", np.min(loss_list), i)
+                self.writer.add_scalar("Steps/avg", np.mean(steps_list), i)
             self.writer.add_scalar("Steps/max", np.max(steps_list), i)
             self.writer.add_scalar("Steps/min", np.min(steps_list), i)
             self.writer.add_scalar("Epsilon", self.epsilon, i)
-
 
             if i % 1000 == 0 and i > 0:
                 printb(f"Avg Reward for {i}th iteration: {np.mean(rew_list):.2f}",
@@ -130,11 +117,3 @@ class DQN(BaseDQN):
                 loss_list.clear()
                 steps_list.clear()
         self.writer.close()
-
-
-def printb(*messages):
-    width = max(len(message) for message in messages) + 4
-    print("+" + "-" * width + "+")
-    for message in messages:
-        print("| " + message.ljust(width - 2) + " |")
-    print("+" + "-" * width + "+")
