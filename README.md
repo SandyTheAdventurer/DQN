@@ -10,3 +10,7 @@ Two Networks
 ~Tensorboard Logging~
 
 Benchmarks in Standard Gymnasium Environments
+
+Adding CNNPolicy
+
+Trying to add a RNNlayer
