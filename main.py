@@ -39,23 +39,3 @@ def printb(*messages):
     for message in messages:
         print("| " + message.ljust(width - 2) + " |")
     print("+" + "-" * width + "+")
-
-class Buffer:
-    def __init__(self, data=[], max_size=5):
-        self.max_size = max_size
-        self.data = data
-
-    def append(self, item):
-        if len(self.data) >= self.max_size:
-            self.data.pop(0)
-        self.data.append(item)
-
-    def __len__(self):
-        return len(self.data)
-
-    def remove(self, item):
-        if item in self.data:
-            self.data.remove(item)
-
-    def __repr__(self):
-        return repr(self.data)
