@@ -5,7 +5,7 @@ from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 from tqdm import tqdm
 
-from main import Base, printb, Buffer
+from main import Base, printb
 
 torch.set_default_device('cuda')
 torch.set_default_dtype(torch.float64)
@@ -19,7 +19,7 @@ class DQN(Base):
         self.actionlen = self.env.action_space.n
         self.writer = SummaryWriter(self.logdir)
         self.gamma = gamma
-        self.replay_buffer= Buffer(max_size=10000)
+        self.replay_buffer = []
         self.batch_size = batch_size
         super().__init__(input_size=self.env.observation_space.shape[0] + 1, output_size=1)
 
@@ -34,7 +34,7 @@ class DQN(Base):
             return torch.argmax(q_values).item()
 
     def infer(self):
-        batch = random.sample(self.replay_buffer.data, self.batch_size)
+        batch = random.sample(self.replay_buffer, self.batch_size)
         obs_batch, action_batch, rew_batch, next_obs_batch, done_batch = zip(*batch)
 
         inputs = torch.stack([torch.tensor(list(obs) + [action], dtype=torch.float64, device='cuda')
